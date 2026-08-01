@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx --yes create-next-app@15 --help)",
+      "Bash(rm -rf /tmp/claude-1000/-home-sakshambejwani-testing-llms/8cb42f2f-f9ae-4cb5-9db2-877ff2f011e7/scratchpad/nextscaffold)",
+      "Bash(npx --yes create-next-app@15 /tmp/claude-1000/-home-sakshambejwani-testing-llms/8cb42f2f-f9ae-4cb5-9db2-877ff2f011e7/scratchpad/nextscaffold --typescript --tailwind --app --eslint --import-alias \"@/*\" --use-npm --turbopack --yes --disable-git)",
+      "Bash(npm install *)",
+      "Bash(command -v nvm)",
+      "Bash(command -v fnm)",
+      "Bash(command -v volta)",
+      "Bash(command -v n)",
+      "Read(//home/sakshambejwani/.nvm/**)",
+      "Bash(node -p \"process.version\")",
+      "Bash(apt list *)",
+      "Bash(npx supabase *)",
+      "Bash(curl -s http://127.0.0.1:54321/rest/v1/bots -H \"apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU\" -H \"Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU\")",
+      "Bash(time curl -s http://localhost:11434/v1/chat/completions -H 'Content-Type: application/json' -d '{ *)"
+    ]
+  }
+}
