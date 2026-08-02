@@ -86,5 +86,24 @@ async function testConnector(connector: Connector): Promise<{ message: string; d
       if (!res.ok) throw new Error(`Resend API key check failed: ${res.status} ${await res.text()}`);
       return { message: "Resend API key is valid." };
     }
+    case "vision_grounding": {
+      const config = connectorConfigSchemaFor("vision_grounding").parse(connector.config);
+      // GET /v1/models instead of a real inference call - same "check
+      // reachability without doing the expensive/side-effectful thing" spirit
+      // as the slack_webhook case above, but here the cost being avoided is
+      // GPU inference time rather than a sent message.
+      const res = await fetch(`${config.baseUrl}/v1/models`, {
+        headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
+      });
+      if (!res.ok) throw new Error(`Vision grounding server unreachable: ${res.status} ${await res.text()}`);
+      const data = await res.json();
+      const modelIds: string[] = (data.data ?? []).map((m: { id: string }) => m.id);
+      if (!modelIds.includes(config.model)) {
+        throw new Error(
+          `Server is reachable, but model "${config.model}" isn't loaded. Available: ${modelIds.join(", ") || "(none)"}`,
+        );
+      }
+      return { message: "Vision grounding server is reachable and the configured model is loaded." };
+    }
   }
 }

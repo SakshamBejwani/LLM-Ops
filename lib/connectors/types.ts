@@ -1,6 +1,13 @@
 import { z } from "zod";
 
-export type ConnectorType = "mcp" | "web_search" | "weather" | "github" | "slack_webhook" | "email";
+export type ConnectorType =
+  | "mcp"
+  | "web_search"
+  | "weather"
+  | "github"
+  | "slack_webhook"
+  | "email"
+  | "vision_grounding";
 
 export const CONNECTOR_TYPES: ConnectorType[] = [
   "mcp",
@@ -9,6 +16,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
   "github",
   "slack_webhook",
   "email",
+  "vision_grounding",
 ];
 
 export const mcpConfigSchema = z.discriminatedUnion("transport", [
@@ -50,6 +58,17 @@ export const emailConfigSchema = z.object({
 });
 export type EmailConfig = z.infer<typeof emailConfigSchema>;
 
+// `apiKey` is optional here (unlike every other adapter's secret field) since
+// self-hosted vLLM/SGLang servers commonly run with no `--api-key` set. The
+// connector form leaves an unfilled field as `""`, not `undefined` - callers
+// must treat an empty string as "no key", this schema won't normalize it away.
+export const visionGroundingConfigSchema = z.object({
+  baseUrl: z.string().url(),
+  model: z.string().min(1),
+  apiKey: z.string().optional(),
+});
+export type VisionGroundingConfig = z.infer<typeof visionGroundingConfigSchema>;
+
 export const connectorConfigSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("mcp"), config: mcpConfigSchema }),
   z.object({ type: z.literal("web_search"), config: webSearchConfigSchema }),
@@ -57,6 +76,7 @@ export const connectorConfigSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("github"), config: githubConfigSchema }),
   z.object({ type: z.literal("slack_webhook"), config: slackWebhookConfigSchema }),
   z.object({ type: z.literal("email"), config: emailConfigSchema }),
+  z.object({ type: z.literal("vision_grounding"), config: visionGroundingConfigSchema }),
 ]);
 
 export type Connector = {
@@ -64,7 +84,14 @@ export type Connector = {
   type: ConnectorType;
   name: string;
   description: string | null;
-  config: McpConfig | WebSearchConfig | WeatherConfig | GithubConfig | SlackWebhookConfig | EmailConfig;
+  config:
+    | McpConfig
+    | WebSearchConfig
+    | WeatherConfig
+    | GithubConfig
+    | SlackWebhookConfig
+    | EmailConfig
+    | VisionGroundingConfig;
   enabled: boolean;
   created_at: string;
 };
@@ -75,6 +102,7 @@ export function connectorConfigSchemaFor(type: "weather"): typeof weatherConfigS
 export function connectorConfigSchemaFor(type: "github"): typeof githubConfigSchema;
 export function connectorConfigSchemaFor(type: "slack_webhook"): typeof slackWebhookConfigSchema;
 export function connectorConfigSchemaFor(type: "email"): typeof emailConfigSchema;
+export function connectorConfigSchemaFor(type: "vision_grounding"): typeof visionGroundingConfigSchema;
 export function connectorConfigSchemaFor(type: ConnectorType) {
   switch (type) {
     case "mcp":
@@ -89,5 +117,7 @@ export function connectorConfigSchemaFor(type: ConnectorType) {
       return slackWebhookConfigSchema;
     case "email":
       return emailConfigSchema;
+    case "vision_grounding":
+      return visionGroundingConfigSchema;
   }
 }

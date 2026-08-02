@@ -8,6 +8,7 @@ import { buildTool as buildWeatherTool } from "./adapters/weather";
 import { buildTool as buildGithubTool } from "./adapters/github";
 import { buildTool as buildSlackTool } from "./adapters/slack";
 import { buildTool as buildEmailTool } from "./adapters/email";
+import { buildTool as buildVisionGroundingTool } from "./adapters/locate-anything";
 
 export function connectorToolKey(connectorId: string): string {
   return `connector_${connectorId.replace(/-/g, "")}`;
@@ -25,6 +26,8 @@ function buildAdapterTool(type: Exclude<ConnectorType, "mcp">, config: unknown):
       return buildSlackTool(connectorConfigSchemaFor("slack_webhook").parse(config));
     case "email":
       return buildEmailTool(connectorConfigSchemaFor("email").parse(config));
+    case "vision_grounding":
+      return buildVisionGroundingTool(connectorConfigSchemaFor("vision_grounding").parse(config));
   }
 }
 

@@ -17,6 +17,7 @@ const TYPE_LABELS: Record<ConnectorType, string> = {
   github: "GitHub",
   slack_webhook: "Slack webhook",
   email: "Email (Resend)",
+  vision_grounding: "Vision grounding (VLM object localization)",
 };
 
 export type ConnectorFormValues = {
@@ -238,6 +239,48 @@ function ConnectorConfigFields({
               value={(config.fromAddress as string) ?? ""}
               onChange={(e) => setField("fromAddress", e.target.value)}
               placeholder="bot@yourdomain.com"
+            />
+          </div>
+        </>
+      );
+
+    case "vision_grounding":
+      return (
+        <>
+          <div className="space-y-2">
+            <Label htmlFor="connector-vg-base-url">Server URL</Label>
+            <Input
+              id="connector-vg-base-url"
+              value={(config.baseUrl as string) ?? ""}
+              onChange={(e) => setField("baseUrl", e.target.value)}
+              placeholder="http://host:8000"
+            />
+            <p className="text-xs text-muted-foreground">
+              Your self-hosted vLLM/SGLang server, exposing an OpenAI-compatible API. Must be reachable from
+              this app&apos;s server process - and separately, the server itself must be able to reach any
+              image URL a bot passes it, since this app never downloads the image itself.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="connector-vg-model">Model name</Label>
+            <Input
+              id="connector-vg-model"
+              value={(config.model as string) ?? ""}
+              onChange={(e) => setField("model", e.target.value)}
+              placeholder="nvidia/LocateAnything-3B"
+            />
+            <p className="text-xs text-muted-foreground">
+              Must exactly match the server&apos;s --model or --served-model-name value.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="connector-vg-api-key">API key (optional)</Label>
+            <Input
+              id="connector-vg-api-key"
+              type="password"
+              value={(config.apiKey as string) ?? ""}
+              onChange={(e) => setField("apiKey", e.target.value)}
+              placeholder="Leave blank if the server has no --api-key set"
             />
           </div>
         </>
