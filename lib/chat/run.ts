@@ -156,7 +156,7 @@ export const runBotCompletion: RunBotCompletion = async ({ bot, input, depth, pa
 
     // Depth guard in resolveTools means depth >= 1 never resolves `bot:*`
     // tools, so there's no need to fetch other bots here.
-    const tools = resolveTools({
+    const tools = await resolveTools({
       toolIds: bot.tool_ids,
       allBots: [],
       depth,
@@ -172,6 +172,7 @@ export const runBotCompletion: RunBotCompletion = async ({ bot, input, depth, pa
           system: bot.system_prompt,
           prompt: input,
           temperature: bot.temperature,
+          topP: bot.top_p ?? undefined,
           tools,
           stopWhen: stepCountIs(MAX_STEPS),
           ...instrumentation,
@@ -304,7 +305,7 @@ export function streamBotChat(params: {
     });
 
     const allBots = await fetchAllBots();
-    const tools = resolveTools({
+    const tools = await resolveTools({
       toolIds: bot.tool_ids,
       allBots,
       depth: 0,
@@ -318,6 +319,7 @@ export function streamBotChat(params: {
       system: bot.system_prompt,
       messages,
       temperature: bot.temperature,
+      topP: bot.top_p ?? undefined,
       tools,
       stopWhen: stepCountIs(MAX_STEPS),
       maxRetries: 2,

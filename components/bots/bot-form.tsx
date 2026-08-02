@@ -20,6 +20,7 @@ export type BotFormValues = {
   system_prompt: string;
   model: string;
   temperature: number;
+  top_p: number | null;
   tool_ids: string[];
 };
 
@@ -38,6 +39,8 @@ export function BotForm({
   const [systemPrompt, setSystemPrompt] = useState(initialValues?.system_prompt ?? "");
   const [model, setModel] = useState(initialValues?.model ?? "");
   const [temperature, setTemperature] = useState(initialValues?.temperature ?? 0.7);
+  const [topPEnabled, setTopPEnabled] = useState(initialValues?.top_p != null);
+  const [topP, setTopP] = useState(initialValues?.top_p ?? 1);
   const [toolIds, setToolIds] = useState<string[]>(initialValues?.tool_ids ?? []);
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -67,7 +70,14 @@ export function BotForm({
     }
     setSubmitting(true);
     try {
-      await onSubmit({ name: name.trim(), system_prompt: systemPrompt, model, temperature, tool_ids: toolIds });
+      await onSubmit({
+        name: name.trim(),
+        system_prompt: systemPrompt,
+        model,
+        temperature,
+        top_p: topPEnabled ? topP : null,
+        tool_ids: toolIds,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -134,6 +144,33 @@ export function BotForm({
           onChange={(e) => setTemperature(Number(e.target.value))}
           className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-muted accent-primary"
         />
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={topPEnabled}
+              onChange={(e) => setTopPEnabled(e.target.checked)}
+              className="size-4"
+            />
+            Top P
+          </label>
+          {topPEnabled && <span className="text-sm text-muted-foreground">{topP.toFixed(2)}</span>}
+        </div>
+        {topPEnabled && (
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={topP}
+            onChange={(e) => setTopP(Number(e.target.value))}
+            className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-muted accent-primary"
+          />
+        )}
+        {!topPEnabled && <p className="text-xs text-muted-foreground">Unset - the model uses its own default.</p>}
       </div>
 
       <div className="space-y-2">

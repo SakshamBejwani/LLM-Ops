@@ -31,6 +31,7 @@ export function ToolPicker({
 
   const builtins = options.filter((o) => o.kind === "builtin");
   const bots = options.filter((o) => o.kind === "bot");
+  const connectors = options.filter((o) => o.kind === "connector");
 
   if (loading) {
     return <p className="text-sm text-muted-foreground">Loading tools…</p>;
@@ -54,6 +55,21 @@ export function ToolPicker({
         ) : (
           <div className="space-y-2">
             {bots.map((tool) => (
+              <ToolRow key={tool.id} tool={tool} checked={value.includes(tool.id)} onToggle={toggle} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <p className="mb-2 text-sm font-medium">Connectors</p>
+        {connectors.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No connectors yet - add one on the Connectors page.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {connectors.map((tool) => (
               <ToolRow key={tool.id} tool={tool} checked={value.includes(tool.id)} onToggle={toggle} />
             ))}
           </div>

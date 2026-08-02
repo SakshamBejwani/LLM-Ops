@@ -16,16 +16,20 @@ export function NodeConnectPicker({
   onSelectBot,
   onSelectExisting,
   onSelectCondition,
+  onSelectParallel,
+  onSelectJudge,
 }: {
   bots: Bot[];
   existingNodes: ConnectPickerExistingNode[];
   onClose: () => void;
   onSelectBot: (bot: Bot) => void;
   onSelectExisting: (nodeId: string) => void;
-  /** Undefined when opened from a condition node's own If/Else handle - a
-   * condition node feeding directly into another one is possible but not the
-   * primary flow, so it's left out of the picker in that case. */
+  /** Undefined when opened from a condition/parallel/judge node's own branch
+   * handle - those actions aren't meaningful feeding directly into another
+   * one, so they're left out of the picker in that case. */
   onSelectCondition?: () => void;
+  onSelectParallel?: () => void;
+  onSelectJudge?: () => void;
 }) {
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border bg-background/95 shadow-xl backdrop-blur-md">
@@ -37,19 +41,45 @@ export function NodeConnectPicker({
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
-        {onSelectCondition && (
+        {(onSelectCondition || onSelectParallel || onSelectJudge) && (
           <div className="space-y-1.5">
             <p className="text-xs font-medium text-muted-foreground">Actions</p>
-            <button
-              type="button"
-              onClick={onSelectCondition}
-              className="flex w-full flex-col rounded-md border border-amber-500/40 p-2 text-left text-sm hover:bg-muted/50"
-            >
-              <span className="font-medium">Condition</span>
-              <span className="text-xs text-muted-foreground">
-                Route to two outputs (if/else) based on N conditions - no bot call.
-              </span>
-            </button>
+            {onSelectJudge && (
+              <button
+                type="button"
+                onClick={onSelectJudge}
+                className="flex w-full flex-col rounded-md border border-violet-500/40 p-2 text-left text-sm hover:bg-muted/50"
+              >
+                <span className="font-medium">Judge</span>
+                <span className="text-xs text-muted-foreground">
+                  Grade the input against a rubric with an LLM, route to pass/fail.
+                </span>
+              </button>
+            )}
+            {onSelectCondition && (
+              <button
+                type="button"
+                onClick={onSelectCondition}
+                className="flex w-full flex-col rounded-md border border-amber-500/40 p-2 text-left text-sm hover:bg-muted/50"
+              >
+                <span className="font-medium">Condition</span>
+                <span className="text-xs text-muted-foreground">
+                  Route to two outputs (if/else) based on N conditions - no bot call.
+                </span>
+              </button>
+            )}
+            {onSelectParallel && (
+              <button
+                type="button"
+                onClick={onSelectParallel}
+                className="flex w-full flex-col rounded-md border border-sky-500/40 p-2 text-left text-sm hover:bg-muted/50"
+              >
+                <span className="font-medium">Parallel branch</span>
+                <span className="text-xs text-muted-foreground">
+                  Fan out into branches that run at once, then join back together - no bot call.
+                </span>
+              </button>
+            )}
           </div>
         )}
 

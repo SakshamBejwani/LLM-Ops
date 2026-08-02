@@ -1,7 +1,7 @@
 "use client";
 
 import { CircleDashed, Loader2, CheckCircle2 } from "lucide-react";
-import { BUILTIN_TOOLS, botToolKey } from "@/lib/tools";
+import { BUILTIN_TOOLS, botToolKey } from "@/lib/tools/builtin";
 import { cn } from "@/lib/utils";
 import type { Bot } from "@/lib/types";
 import type { LiveToolCall } from "@/lib/stores/observability-store";

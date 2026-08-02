@@ -7,6 +7,7 @@ const createBotSchema = z.object({
   system_prompt: z.string().max(8000).default(""),
   model: z.string().min(1),
   temperature: z.number().min(0).max(2).default(0.7),
+  top_p: z.number().min(0).max(1).nullable().default(null),
   tool_ids: z.array(z.string()).default([]),
 });
 

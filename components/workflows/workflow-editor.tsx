@@ -22,8 +22,17 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { BotNode } from "@/components/workflows/bot-node";
 import { ConditionNode } from "@/components/workflows/condition-node";
+import { ParallelNode } from "@/components/workflows/parallel-node";
+import { JoinNode } from "@/components/workflows/join-node";
+import { JudgeNode } from "@/components/workflows/judge-node";
+import { SupervisorScopeNode } from "@/components/workflows/supervisor-scope-node";
 import { NodeConfigPanel, type NodeDialogMode } from "@/components/workflows/node-config-panel";
 import { ConditionNodeConfigPanel, type ConditionDialogMode } from "@/components/workflows/condition-node-config-panel";
+import { JudgeNodeConfigPanel, type JudgeDialogMode } from "@/components/workflows/judge-node-config-panel";
+import {
+  SupervisorScopeConfigPanel,
+  type SupervisorScopeDialogMode,
+} from "@/components/workflows/supervisor-scope-config-panel";
 import { NodeRunDetailPanel } from "@/components/workflows/node-run-detail-panel";
 import { EdgeConditionPanel } from "@/components/workflows/edge-condition-panel";
 import { NodeConnectPicker } from "@/components/workflows/node-connect-picker";
@@ -39,7 +48,9 @@ import {
   importWorkflowNodes,
   applyEdgeLabels,
   computeIsRoot,
+  DEFAULT_SCOPE_SIZE,
   type CanvasNode,
+  type SupervisorScopeNode as SupervisorScopeNodeType,
 } from "@/lib/workflow/canvas";
 import { validateGraph, resolveAvailableFields } from "@/lib/workflow/graph";
 import { useObservabilityStore, workflowNodeKey, type LiveToolCall } from "@/lib/stores/observability-store";
@@ -52,9 +63,29 @@ import type {
   WorkflowNodeRunRecord,
   WorkflowRunRecord,
   WorkflowSchemaField,
+  SupervisorBounds,
 } from "@/lib/types";
 
-const nodeTypes = { bot: BotNode, condition: ConditionNode };
+const nodeTypes = {
+  bot: BotNode,
+  condition: ConditionNode,
+  parallel: ParallelNode,
+  join: JoinNode,
+  judge: JudgeNode,
+  supervisor_scope: SupervisorScopeNode,
+};
+
+const NODE_FOOTPRINT = { width: 224, height: 120 };
+const SCOPE_PADDING = 24;
+
+/** Next unused "branch-N" id for a parallel node, given its current ones. */
+function nextBranchId(existingBranchIds: string[]): string {
+  const max = existingBranchIds.reduce((m, id) => {
+    const n = Number(/^branch-(\d+)$/.exec(id)?.[1] ?? 0);
+    return Number.isFinite(n) ? Math.max(m, n) : m;
+  }, 0);
+  return `branch-${max + 1}`;
+}
 
 type ViewMode =
   | { type: "editing" }
@@ -73,7 +104,7 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
   const outputSchemaByIdRef = useRef(
     new Map(
       workflow.nodes
-        .filter((n): n is WorkflowBotNodeDefinition => n.kind !== "condition")
+        .filter((n): n is WorkflowBotNodeDefinition => n.kind === undefined || n.kind === "bot")
         .map((n) => [n.id, n.outputSchema]),
     ),
   );
@@ -86,9 +117,7 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
   );
   const edgeBranchByIdRef = useRef(
     new Map(
-      workflow.edges
-        .filter((e): e is typeof e & { branch: "if" | "else" } => !!e.branch)
-        .map((e) => [e.id, e.branch]),
+      workflow.edges.filter((e): e is typeof e & { branch: string } => !!e.branch).map((e) => [e.id, e.branch]),
     ),
   );
 
@@ -103,10 +132,12 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
 
   const [dialogMode, setDialogMode] = useState<NodeDialogMode | null>(null);
   const [conditionDialogMode, setConditionDialogMode] = useState<ConditionDialogMode | null>(null);
+  const [judgeDialogMode, setJudgeDialogMode] = useState<JudgeDialogMode | null>(null);
+  const [supervisorScopeDialogMode, setSupervisorScopeDialogMode] = useState<SupervisorScopeDialogMode | null>(null);
   const [selectedViewNodeId, setSelectedViewNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [connectPickerNodeId, setConnectPickerNodeId] = useState<string | null>(null);
-  const [connectPickerBranch, setConnectPickerBranch] = useState<"if" | "else" | undefined>(undefined);
+  const [connectPickerBranch, setConnectPickerBranch] = useState<string | undefined>(undefined);
   const [viewMode, setViewMode] = useState<ViewMode>({ type: "editing" });
   const [triggerMessage, setTriggerMessage] = useState("");
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
@@ -146,18 +177,62 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
     const plainEdges = edges.map((e) => ({ id: e.id, source: e.source, target: e.target }));
     setNodes((nds) =>
       nds.map((n) => {
+        // Not part of the execution chain - no "Start" badge applies.
+        if (n.type === "supervisor_scope") return n;
         const isRoot = computeIsRoot(n.id, plainEdges);
         if (isRoot === n.data.isRoot) return n;
         // Branching on n.type (rather than one shared spread) keeps each
         // returned object's `data` narrowed to its own node kind - a single
         // `{ ...n, data: { ...n.data, isRoot } }` collapses CanvasNode's
         // discriminated union into an ambiguous shape TS can't reconcile.
-        return n.type === "condition"
-          ? { ...n, data: { ...n.data, isRoot } }
-          : { ...n, data: { ...n.data, isRoot } };
+        if (n.type === "condition") return { ...n, data: { ...n.data, isRoot } };
+        if (n.type === "parallel") return { ...n, data: { ...n.data, isRoot } };
+        if (n.type === "join") return { ...n, data: { ...n.data, isRoot } };
+        if (n.type === "judge") return { ...n, data: { ...n.data, isRoot } };
+        return { ...n, data: { ...n.data, isRoot } };
       }),
     );
   }, [edges, setNodes]);
+
+  // Recompute each supervisor scope's membership (which bots currently sit
+  // inside its box) and grow the box to fit them, whenever any node moves.
+  // Returns the *same* `nds` reference when nothing changes so this doesn't
+  // loop forever - setNodes bails out of a re-render on an unchanged array.
+  useEffect(() => {
+    setNodes((nds) => {
+      const scopes = nds.filter((n): n is SupervisorScopeNodeType => n.type === "supervisor_scope");
+      if (scopes.length === 0) return nds;
+      let changed = false;
+      const next = nds.map((n) => {
+        if (n.type !== "supervisor_scope") return n;
+        const width = n.width ?? DEFAULT_SCOPE_SIZE.width;
+        const height = n.height ?? DEFAULT_SCOPE_SIZE.height;
+        const memberIds: string[] = [];
+        let maxX = n.position.x + width;
+        let maxY = n.position.y + height;
+        for (const other of nds) {
+          if (other.id === n.id || other.type === "supervisor_scope") continue;
+          const cx = other.position.x + NODE_FOOTPRINT.width / 2;
+          const cy = other.position.y + NODE_FOOTPRINT.height / 2;
+          const inside =
+            cx >= n.position.x && cx <= n.position.x + width && cy >= n.position.y && cy <= n.position.y + height;
+          if (!inside) continue;
+          memberIds.push(other.id);
+          maxX = Math.max(maxX, other.position.x + NODE_FOOTPRINT.width + SCOPE_PADDING);
+          maxY = Math.max(maxY, other.position.y + NODE_FOOTPRINT.height + SCOPE_PADDING);
+        }
+        const nextWidth = Math.max(width, maxX - n.position.x);
+        const nextHeight = Math.max(height, maxY - n.position.y);
+        const sameMembers =
+          memberIds.length === n.data.memberNodeIds.length &&
+          memberIds.every((id) => n.data.memberNodeIds.includes(id));
+        if (sameMembers && nextWidth === width && nextHeight === height) return n;
+        changed = true;
+        return { ...n, width: nextWidth, height: nextHeight, data: { ...n.data, memberNodeIds: memberIds } };
+      });
+      return changed ? next : nds;
+    });
+  }, [nodes, setNodes]);
 
   const nodeViews = useMemo<Record<string, NodeRunView>>(() => {
     if (viewMode.type === "editing") return {};
@@ -211,13 +286,14 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
           durationMs: call.durationMs ?? undefined,
           status: "done" as const,
         })),
+        supervisorOverride: nodeRun.supervisor_override,
       };
     }
     return result;
   }, [viewMode, nodes, workflowNodeStatuses, liveRequests, requestHistory]);
 
   const connectNodes = useCallback(
-    (sourceId: string, targetId: string, branch?: "if" | "else") => {
+    (sourceId: string, targetId: string, branch?: string) => {
       const newEdgeId = crypto.randomUUID();
       const sourceHadEdge = edges.some((e) => e.source === sourceId);
       if (branch) edgeBranchByIdRef.current.set(newEdgeId, branch);
@@ -238,6 +314,8 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
       if (sourceHadEdge && !branch) {
         setDialogMode(null);
         setConditionDialogMode(null);
+        setJudgeDialogMode(null);
+        setSupervisorScopeDialogMode(null);
         setSelectedViewNodeId(null);
         setLogsOpen(false);
         setSelectedEdgeId(newEdgeId);
@@ -249,16 +327,19 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
   const handleConnect = useCallback(
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
-      const branch =
-        connection.sourceHandle === "if" || connection.sourceHandle === "else" ? connection.sourceHandle : undefined;
-      connectNodes(connection.source, connection.target, branch);
+      // Only condition ("if"/"else") and parallel ("branch-N") source nodes
+      // set a sourceHandle id at all - a bot/join node's single output handle
+      // is unnamed (null), so any non-null handle here is a branch.
+      connectNodes(connection.source, connection.target, connection.sourceHandle ?? undefined);
     },
     [connectNodes],
   );
 
-  const handleRequestConnect = useCallback((nodeId: string, branch?: "if" | "else") => {
+  const handleRequestConnect = useCallback((nodeId: string, branch?: string) => {
     setDialogMode(null);
     setConditionDialogMode(null);
+    setJudgeDialogMode(null);
+    setSupervisorScopeDialogMode(null);
     setSelectedViewNodeId(null);
     setSelectedEdgeId(null);
     setLogsOpen(false);
@@ -274,6 +355,8 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
       if (viewMode.type !== "editing") {
         setDialogMode(null);
         setConditionDialogMode(null);
+        setJudgeDialogMode(null);
+        setSupervisorScopeDialogMode(null);
         setSelectedViewNodeId(node.id);
         return;
       }
@@ -293,8 +376,47 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
         });
         return;
       }
+      if (node.type === "judge") {
+        setDialogMode(null);
+        setJudgeDialogMode({
+          type: "edit",
+          node: {
+            id: node.id,
+            kind: "judge",
+            label: node.data.label,
+            rubric: node.data.rubric,
+            referenceField: node.data.referenceField,
+            model: node.data.model,
+            position: node.position,
+          },
+        });
+        return;
+      }
+      if (node.type === "supervisor_scope") {
+        setDialogMode(null);
+        setSupervisorScopeDialogMode({
+          type: "edit",
+          node: {
+            id: node.id,
+            kind: "supervisor_scope",
+            label: node.data.label,
+            instructions: node.data.instructions,
+            model: node.data.model,
+            bounds: node.data.bounds,
+            memberNodeIds: node.data.memberNodeIds,
+            position: node.position,
+            size: { width: node.width ?? DEFAULT_SCOPE_SIZE.width, height: node.height ?? DEFAULT_SCOPE_SIZE.height },
+          },
+        });
+        return;
+      }
+      // Parallel/join nodes have no per-node config - just fan-out shape
+      // (branches) and a merge point, both edited via connections directly.
+      if (node.type === "parallel" || node.type === "join") return;
       const outputSchema = outputSchemaByIdRef.current.get(node.id) ?? { fields: [] };
       setConditionDialogMode(null);
+      setJudgeDialogMode(null);
+      setSupervisorScopeDialogMode(null);
       setDialogMode({
         type: "edit",
         node: {
@@ -318,6 +440,8 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
       if (edgeBranchByIdRef.current.has(edge.id)) return;
       setDialogMode(null);
       setConditionDialogMode(null);
+      setJudgeDialogMode(null);
+      setSupervisorScopeDialogMode(null);
       setSelectedViewNodeId(null);
       setConnectPickerNodeId(null);
       setLogsOpen(false);
@@ -442,6 +566,8 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
         ]);
       }
       setConditionDialogMode(null);
+      setJudgeDialogMode(null);
+      setSupervisorScopeDialogMode(null);
     },
     [conditionDialogMode, nodes.length, setNodes],
   );
@@ -451,8 +577,121 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
       setNodes((nds) => nds.filter((n) => n.id !== nodeId));
       setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
       setConditionDialogMode(null);
+      setJudgeDialogMode(null);
+      setSupervisorScopeDialogMode(null);
     },
     [setNodes, setEdges],
+  );
+
+  const handleJudgeDialogSave = useCallback(
+    (values: { label: string; rubric: string; referenceField?: string; model: string }) => {
+      if (judgeDialogMode?.type === "edit") {
+        const nodeId = judgeDialogMode.node.id;
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === nodeId && n.type === "judge"
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    label: values.label || "Judge",
+                    rubric: values.rubric,
+                    referenceField: values.referenceField,
+                    model: values.model,
+                  },
+                }
+              : n,
+          ),
+        );
+      } else {
+        const nodeId = crypto.randomUUID();
+        const position = { x: 80 + nodes.length * 260, y: 120 };
+        setNodes((nds) => [
+          ...nds,
+          {
+            id: nodeId,
+            type: "judge",
+            position,
+            data: {
+              label: values.label || "Judge",
+              rubric: values.rubric,
+              referenceField: values.referenceField,
+              model: values.model,
+              isRoot: computeIsRoot(nodeId, []),
+            },
+          },
+        ]);
+      }
+      setConditionDialogMode(null);
+      setJudgeDialogMode(null);
+      setSupervisorScopeDialogMode(null);
+    },
+    [judgeDialogMode, nodes.length, setNodes],
+  );
+
+  const handleJudgeDialogDelete = useCallback(
+    (nodeId: string) => {
+      setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+      setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
+      setJudgeDialogMode(null);
+      setSupervisorScopeDialogMode(null);
+    },
+    [setNodes, setEdges],
+  );
+
+  const handleAddSupervisorScope = useCallback(() => {
+    setDialogMode(null);
+    setConditionDialogMode(null);
+    setJudgeDialogMode(null);
+    setSupervisorScopeDialogMode(null);
+    setConnectPickerNodeId(null);
+    setSupervisorScopeDialogMode({ type: "create" });
+  }, []);
+
+  const handleSupervisorScopeDialogSave = useCallback(
+    (values: { label: string; instructions: string; model: string; bounds: SupervisorBounds }) => {
+      if (supervisorScopeDialogMode?.type === "edit") {
+        const nodeId = supervisorScopeDialogMode.node.id;
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === nodeId && n.type === "supervisor_scope"
+              ? { ...n, data: { ...n.data, label: values.label, instructions: values.instructions, model: values.model, bounds: values.bounds } }
+              : n,
+          ),
+        );
+      } else {
+        const nodeId = crypto.randomUUID();
+        const position = { x: 80 + nodes.length * 60, y: 400 };
+        setNodes((nds) => [
+          ...nds,
+          {
+            id: nodeId,
+            type: "supervisor_scope",
+            position,
+            width: DEFAULT_SCOPE_SIZE.width,
+            height: DEFAULT_SCOPE_SIZE.height,
+            zIndex: -1,
+            data: {
+              label: values.label,
+              instructions: values.instructions,
+              model: values.model,
+              bounds: values.bounds,
+              memberNodeIds: [],
+            },
+          },
+        ]);
+      }
+      setSupervisorScopeDialogMode(null);
+    },
+    [supervisorScopeDialogMode, nodes.length, setNodes],
+  );
+
+  const handleSupervisorScopeDialogDelete = useCallback(
+    (nodeId: string) => {
+      setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+      setSupervisorScopeDialogMode(null);
+    },
+    [setNodes],
   );
 
   const handlePickerSelectBot = useCallback(
@@ -515,6 +754,70 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
     ]);
     connectNodes(connectPickerNodeId, newNodeId, connectPickerBranch);
   }, [connectPickerNodeId, connectPickerBranch, nodes, edges, setNodes, connectNodes]);
+
+  const handlePickerSelectJudge = useCallback(() => {
+    if (!connectPickerNodeId) return;
+    const sourceNode = nodes.find((n) => n.id === connectPickerNodeId);
+    if (!sourceNode) return;
+    const outgoingCount = edges.filter((e) => e.source === connectPickerNodeId).length;
+    const newNodeId = crypto.randomUUID();
+    const position = {
+      x: sourceNode.position.x + 280,
+      y: sourceNode.position.y + outgoingCount * 140,
+    };
+    setNodes((nds) => [
+      ...nds,
+      {
+        id: newNodeId,
+        type: "judge",
+        position,
+        data: { label: "Judge", rubric: "", model: "", isRoot: computeIsRoot(newNodeId, []) },
+      },
+    ]);
+    connectNodes(connectPickerNodeId, newNodeId, connectPickerBranch);
+  }, [connectPickerNodeId, connectPickerBranch, nodes, edges, setNodes, connectNodes]);
+
+  const handlePickerSelectParallel = useCallback(() => {
+    if (!connectPickerNodeId) return;
+    const sourceNode = nodes.find((n) => n.id === connectPickerNodeId);
+    if (!sourceNode) return;
+    const outgoingCount = edges.filter((e) => e.source === connectPickerNodeId).length;
+    const parallelId = crypto.randomUUID();
+    const joinId = crypto.randomUUID();
+    const parallelPosition = {
+      x: sourceNode.position.x + 280,
+      y: sourceNode.position.y + outgoingCount * 140,
+    };
+    const joinPosition = { x: parallelPosition.x + 280, y: parallelPosition.y };
+    setNodes((nds) => [
+      ...nds,
+      {
+        id: parallelId,
+        type: "parallel",
+        position: parallelPosition,
+        data: { label: "Parallel", branchIds: ["branch-1", "branch-2"], isRoot: computeIsRoot(parallelId, []) },
+      },
+      {
+        id: joinId,
+        type: "join",
+        position: joinPosition,
+        data: { label: "Join", isRoot: computeIsRoot(joinId, []) },
+      },
+    ]);
+    connectNodes(connectPickerNodeId, parallelId, connectPickerBranch);
+  }, [connectPickerNodeId, connectPickerBranch, nodes, edges, setNodes, connectNodes]);
+
+  const handleAddParallelBranch = useCallback(
+    (parallelNodeId: string) => {
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.id !== parallelNodeId || n.type !== "parallel") return n;
+          return { ...n, data: { ...n.data, branchIds: [...n.data.branchIds, nextBranchId(n.data.branchIds)] } };
+        }),
+      );
+    },
+    [setNodes],
+  );
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -643,7 +946,7 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
         const { nodes: importedNodes, edges: importedEdges } = importWorkflowNodes(parsed);
         outputSchemaByIdRef.current = new Map(
           importedNodes
-            .filter((n): n is WorkflowBotNodeDefinition => n.kind !== "condition")
+            .filter((n): n is WorkflowBotNodeDefinition => n.kind === undefined || n.kind === "bot")
             .map((n) => [n.id, n.outputSchema]),
         );
         edgeConditionByIdRef.current = new Map(
@@ -652,9 +955,7 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
             .map((e) => [e.id, e.condition]),
         );
         edgeBranchByIdRef.current = new Map(
-          importedEdges
-            .filter((e): e is typeof e & { branch: "if" | "else" } => !!e.branch)
-            .map((e) => [e.id, e.branch]),
+          importedEdges.filter((e): e is typeof e & { branch: string } => !!e.branch).map((e) => [e.id, e.branch]),
         );
         const flow = definitionsToFlow(importedNodes, importedEdges, bots);
         setNodes(flow.nodes);
@@ -669,22 +970,37 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
 
   const selectedViewNode = selectedViewNodeId ? nodes.find((n) => n.id === selectedViewNodeId) : undefined;
   const selectedViewNodeName = selectedViewNode
-    ? selectedViewNode.type === "condition"
-      ? selectedViewNode.data.label
-      : selectedViewNode.data.botName
+    ? selectedViewNode.type === "bot"
+      ? selectedViewNode.data.botName
+      : selectedViewNode.data.label
     : "Unknown bot";
   const selectedEdge = selectedEdgeId ? edges.find((e) => e.id === selectedEdgeId) : undefined;
   // Only nodes with no incoming edge yet are valid quick-connect targets -
-  // validateGraph bans fan-in, so anything else would be a dead-end pick.
+  // validateGraph bans fan-in everywhere except a join node, which is exactly
+  // meant to receive more than one.
   const existingNodesForPicker = connectPickerNodeId
     ? (() => {
         const plainEdges = edges.map((e) => ({ id: e.id, source: e.source, target: e.target }));
         return nodes
-          .filter((n) => n.id !== connectPickerNodeId && computeIsRoot(n.id, plainEdges))
+          .filter(
+            (n) =>
+              n.id !== connectPickerNodeId &&
+              n.type !== "supervisor_scope" &&
+              (n.type === "join" || computeIsRoot(n.id, plainEdges)),
+          )
           .map((n) => ({
             id: n.id,
             label: n.data.label,
-            botName: n.type === "condition" ? "Condition" : n.data.botName,
+            botName:
+              n.type === "bot"
+                ? n.data.botName
+                : n.type === "condition"
+                  ? "Condition"
+                  : n.type === "parallel"
+                    ? "Parallel"
+                    : n.type === "judge"
+                      ? "Judge"
+                      : "Join",
           }));
       })()
     : [];
@@ -701,6 +1017,19 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
           return resolveAvailableFields(conditionDialogMode.node.id, defNodes, defEdges);
         })()
       : [];
+  const judgeAvailableFields =
+    judgeDialogMode?.type === "edit"
+      ? (() => {
+          const { nodes: defNodes, edges: defEdges } = flowToDefinitions(
+            nodes,
+            edges,
+            outputSchemaByIdRef.current,
+            edgeConditionByIdRef.current,
+            edgeBranchByIdRef.current,
+          );
+          return resolveAvailableFields(judgeDialogMode.node.id, defNodes, defEdges);
+        })()
+      : [];
 
   return (
     <ReactFlowProvider>
@@ -710,6 +1039,7 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
             bots,
             nodeViews,
             onRequestConnect: viewMode.type === "editing" ? handleRequestConnect : undefined,
+            onAddParallelBranch: viewMode.type === "editing" ? handleAddParallelBranch : undefined,
           }}
         >
           <div className="relative h-full w-full overflow-hidden bg-muted/20">
@@ -746,10 +1076,15 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
                   setSelectedEdgeId(null);
                   setConnectPickerNodeId(null);
                   setConditionDialogMode(null);
+                  setJudgeDialogMode(null);
+                  setSupervisorScopeDialogMode(null);
                   setDialogMode({ type: "create" });
                 }}
               >
                 + Add bot
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleAddSupervisorScope}>
+                + Add supervisor
               </Button>
               <Button variant="outline" size="sm" onClick={handleSave} disabled={saving}>
                 {saving ? "Saving…" : "Save"}
@@ -795,6 +1130,8 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
                 onClick={() => {
                   setDialogMode(null);
                   setConditionDialogMode(null);
+                  setJudgeDialogMode(null);
+                  setSupervisorScopeDialogMode(null);
                   setSelectedViewNodeId(null);
                   setSelectedEdgeId(null);
                   setConnectPickerNodeId(null);
@@ -809,6 +1146,8 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
             {/* Right dock: node editor / node run detail / edge condition / connect picker / logs panel share one slot */}
             {(dialogMode ||
               conditionDialogMode ||
+              judgeDialogMode ||
+              supervisorScopeDialogMode ||
               logsOpen ||
               selectedViewNodeId ||
               (selectedEdgeId && selectedEdge) ||
@@ -829,6 +1168,28 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
                     onClose={() => setConditionDialogMode(null)}
                     onSave={handleConditionDialogSave}
                     onDelete={handleConditionDialogDelete}
+                  />
+                ) : judgeDialogMode ? (
+                  <JudgeNodeConfigPanel
+                    mode={judgeDialogMode}
+                    availableFields={judgeAvailableFields}
+                    onClose={() => setJudgeDialogMode(null)}
+                    onSave={handleJudgeDialogSave}
+                    onDelete={handleJudgeDialogDelete}
+                  />
+                ) : supervisorScopeDialogMode ? (
+                  <SupervisorScopeConfigPanel
+                    mode={supervisorScopeDialogMode}
+                    memberCount={
+                      supervisorScopeDialogMode.type === "edit"
+                        ? ((nodes.find((n) => n.id === supervisorScopeDialogMode.node.id) as
+                            | SupervisorScopeNodeType
+                            | undefined)?.data.memberNodeIds.length ?? 0)
+                        : 0
+                    }
+                    onClose={() => setSupervisorScopeDialogMode(null)}
+                    onSave={handleSupervisorScopeDialogSave}
+                    onDelete={handleSupervisorScopeDialogDelete}
                   />
                 ) : selectedViewNodeId ? (
                   <NodeRunDetailPanel
@@ -860,6 +1221,8 @@ export function WorkflowEditor({ workflow, bots }: { workflow: Workflow; bots: B
                     onSelectBot={handlePickerSelectBot}
                     onSelectExisting={handlePickerSelectExisting}
                     onSelectCondition={connectPickerBranch ? undefined : handlePickerSelectCondition}
+                    onSelectParallel={connectPickerBranch ? undefined : handlePickerSelectParallel}
+                    onSelectJudge={connectPickerBranch ? undefined : handlePickerSelectJudge}
                   />
                 ) : (
                   <WorkflowSidePanel workflowRunId={activeRunId} onClose={() => setLogsOpen(false)} />

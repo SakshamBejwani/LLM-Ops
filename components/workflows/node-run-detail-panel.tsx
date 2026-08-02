@@ -38,6 +38,7 @@ export function NodeRunDetailPanel({
           output={view?.output}
           error={view?.error}
           toolCalls={toolCalls}
+          supervisorOverride={view?.supervisorOverride}
         />
       </div>
     </div>

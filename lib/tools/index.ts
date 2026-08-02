@@ -1,33 +1,13 @@
 import type { Tool } from "ai";
-import { calculatorTool } from "./calculator";
-import { weatherTool } from "./weather";
-import { searchDocsTool } from "./search-docs";
 import { createBotTool } from "./bot-tool";
+import { resolveConnectorTools } from "@/lib/connectors/registry";
+import { getSupabaseServerClient } from "@/lib/supabase/server";
 import type { Bot, RunBotCompletion, ToolOption } from "@/lib/types";
 
-export const BUILTIN_TOOLS: Record<string, { tool: Tool; name: string; description: string }> = {
-  calculator: {
-    tool: calculatorTool,
-    name: "Calculator",
-    description: "Evaluate arithmetic expressions.",
-  },
-  get_weather: {
-    tool: weatherTool,
-    name: "Get Weather",
-    description: "Mock current weather for a city.",
-  },
-  search_docs: {
-    tool: searchDocsTool,
-    name: "Search Docs",
-    description: "Search a small local knowledge base.",
-  },
-};
+export { BUILTIN_TOOLS, botToolKey } from "./builtin";
+import { BUILTIN_TOOLS, botToolKey } from "./builtin";
 
-export function botToolKey(botId: string): string {
-  return `bot_${botId.replace(/-/g, "")}`;
-}
-
-export function listToolOptions(allBots: Bot[], excludeBotId?: string): ToolOption[] {
+export async function listToolOptions(allBots: Bot[], excludeBotId?: string): Promise<ToolOption[]> {
   const builtins: ToolOption[] = Object.entries(BUILTIN_TOOLS).map(([id, def]) => ({
     id,
     kind: "builtin",
@@ -42,7 +22,20 @@ export function listToolOptions(allBots: Bot[], excludeBotId?: string): ToolOpti
       name: bot.name,
       description: `Delegate to the "${bot.name}" bot.`,
     }));
-  return [...builtins, ...bots];
+
+  const supabase = getSupabaseServerClient();
+  const { data: connectorRows } = await supabase
+    .from("connectors")
+    .select("*")
+    .order("created_at", { ascending: false });
+  const connectors: ToolOption[] = (connectorRows ?? []).map((connector) => ({
+    id: `connector:${connector.id}`,
+    kind: "connector",
+    name: connector.name,
+    description: connector.description || `${connector.type} connector`,
+  }));
+
+  return [...builtins, ...bots, ...connectors];
 }
 
 /**
@@ -51,15 +44,16 @@ export function listToolOptions(allBots: Bot[], excludeBotId?: string): ToolOpti
  * 1, where `bot:*` ids are skipped entirely - so a chain can never exceed 2
  * LLM calls and cycles are impossible without visited-set bookkeeping.
  */
-export function resolveTools(params: {
+export async function resolveTools(params: {
   toolIds: string[];
   allBots: Bot[];
   depth: number;
   runBotCompletion: RunBotCompletion;
   requestId: string;
-}): Record<string, Tool> {
+}): Promise<Record<string, Tool>> {
   const { toolIds, allBots, depth, runBotCompletion, requestId } = params;
   const tools: Record<string, Tool> = {};
+  const connectorIds: string[] = [];
 
   for (const id of toolIds) {
     if (id.startsWith("bot:")) {
@@ -72,9 +66,16 @@ export function resolveTools(params: {
         parentRequestId: requestId,
         runBotCompletion,
       });
+    } else if (id.startsWith("connector:")) {
+      connectorIds.push(id);
     } else if (id in BUILTIN_TOOLS) {
       tools[id] = BUILTIN_TOOLS[id].tool;
     }
   }
+
+  if (connectorIds.length > 0) {
+    Object.assign(tools, await resolveConnectorTools(connectorIds));
+  }
+
   return tools;
 }

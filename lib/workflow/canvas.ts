@@ -1,6 +1,7 @@
 import type { Node, Edge } from "@xyflow/react";
 import type {
   Bot,
+  SupervisorBounds,
   WorkflowConditionClause,
   WorkflowEdgeCondition,
   WorkflowEdgeDefinition,
@@ -27,8 +28,55 @@ export type ConditionNodeData = {
 
 export type ConditionNode = Node<ConditionNodeData, "condition">;
 
-/** Every node type the canvas can render - a bot call, or a no-LLM condition/router. */
-export type CanvasNode = BotNode | ConditionNode;
+export type ParallelNodeData = {
+  label: string;
+  branchIds: string[];
+  isRoot: boolean;
+};
+
+export type ParallelNode = Node<ParallelNodeData, "parallel">;
+
+export type JoinNodeData = {
+  label: string;
+  isRoot: boolean;
+};
+
+export type JoinNode = Node<JoinNodeData, "join">;
+
+export type JudgeNodeData = {
+  label: string;
+  rubric: string;
+  referenceField?: string;
+  model: string;
+  isRoot: boolean;
+};
+
+export type JudgeNode = Node<JudgeNodeData, "judge">;
+
+export type SupervisorScopeNodeData = {
+  label: string;
+  instructions: string;
+  model: string;
+  bounds: SupervisorBounds;
+  memberNodeIds: string[];
+};
+
+export type SupervisorScopeNode = Node<SupervisorScopeNodeData, "supervisor_scope">;
+
+/** Every node type the canvas can render - a bot call, a no-LLM
+ * condition/router, a no-LLM parallel fan-out/join pair, an LLM-graded
+ * pass/fail judge, or a supervisor watch zone (not part of the execution
+ * chain at all - see WorkflowSupervisorScopeDefinition). */
+export type CanvasNode = BotNode | ConditionNode | ParallelNode | JoinNode | JudgeNode | SupervisorScopeNode;
+
+/** Turns "branch-1" into "Branch 1" for display. */
+export function branchDisplayLabel(branchId: string): string {
+  if (branchId === "if" || branchId === "else") return branchId === "if" ? "If" : "Else";
+  const match = /^branch-(\d+)$/.exec(branchId);
+  return match ? `Branch ${match[1]}` : branchId;
+}
+
+export const DEFAULT_SCOPE_SIZE = { width: 320, height: 220 };
 
 export function computeIsRoot(nodeId: string, edges: WorkflowEdgeDefinition[]): boolean {
   return !edges.some((edge) => edge.target === nodeId);
@@ -50,7 +98,7 @@ export function edgeConditionLabel(condition: WorkflowEdgeCondition): string {
 export function applyEdgeLabels(
   edges: Edge[],
   edgeConditionById: Map<string, WorkflowEdgeCondition>,
-  edgeBranchById: Map<string, "if" | "else">,
+  edgeBranchById: Map<string, string>,
 ): Edge[] {
   const outgoingCount = new Map<string, number>();
   for (const edge of edges) {
@@ -58,7 +106,7 @@ export function applyEdgeLabels(
   }
   return edges.map((edge) => {
     const branch = edgeBranchById.get(edge.id);
-    if (branch) return { ...edge, label: branch === "if" ? "If" : "Else" };
+    if (branch) return { ...edge, label: branchDisplayLabel(branch) };
     const condition = edgeConditionById.get(edge.id);
     const label = condition
       ? edgeConditionLabel(condition)
@@ -88,6 +136,53 @@ export function definitionToFlowNode(
       },
     };
   }
+  if (node.kind === "parallel") {
+    return {
+      id: node.id,
+      type: "parallel",
+      position: node.position,
+      data: { label: node.label?.trim() || "Parallel", branchIds: node.branchIds, isRoot },
+    };
+  }
+  if (node.kind === "join") {
+    return {
+      id: node.id,
+      type: "join",
+      position: node.position,
+      data: { label: node.label?.trim() || "Join", isRoot },
+    };
+  }
+  if (node.kind === "judge") {
+    return {
+      id: node.id,
+      type: "judge",
+      position: node.position,
+      data: {
+        label: node.label?.trim() || "Judge",
+        rubric: node.rubric,
+        referenceField: node.referenceField,
+        model: node.model,
+        isRoot,
+      },
+    };
+  }
+  if (node.kind === "supervisor_scope") {
+    return {
+      id: node.id,
+      type: "supervisor_scope",
+      position: node.position,
+      width: node.size.width,
+      height: node.size.height,
+      zIndex: -1,
+      data: {
+        label: node.label,
+        instructions: node.instructions,
+        model: node.model,
+        bounds: node.bounds,
+        memberNodeIds: node.memberNodeIds,
+      },
+    };
+  }
   const bot = bots.find((b) => b.id === node.botId);
   return {
     id: node.id,
@@ -114,11 +209,11 @@ export function definitionsToFlow(
   );
   const edgeBranchById = new Map(
     edges
-      .filter((e): e is WorkflowEdgeDefinition & { branch: "if" | "else" } => !!e.branch)
+      .filter((e): e is WorkflowEdgeDefinition & { branch: string } => !!e.branch)
       .map((e) => [e.id, e.branch]),
   );
-  // sourceHandle must match the branch so a reloaded condition node's edges
-  // reconnect to the right "If"/"Else" handle instead of bunching on one.
+  // sourceHandle must match the branch so a reloaded condition/parallel
+  // node's edges reconnect to the right handle instead of bunching on one.
   const plainEdges: Edge[] = edges.map((e) => ({
     id: e.id,
     source: e.source,
@@ -142,7 +237,7 @@ export function flowToDefinitions(
   edges: Edge[],
   outputSchemaById: Map<string, WorkflowOutputSchema>,
   edgeConditionById: Map<string, WorkflowEdgeCondition>,
-  edgeBranchById: Map<string, "if" | "else">,
+  edgeBranchById: Map<string, string>,
 ): { nodes: WorkflowNodeDefinition[]; edges: WorkflowEdgeDefinition[] } {
   return {
     nodes: nodes.map((n): WorkflowNodeDefinition => {
@@ -154,6 +249,39 @@ export function flowToDefinitions(
           combinator: n.data.combinator,
           clauses: n.data.clauses,
           position: n.position,
+        };
+      }
+      if (n.type === "parallel") {
+        return { id: n.id, kind: "parallel", label: n.data.label, branchIds: n.data.branchIds, position: n.position };
+      }
+      if (n.type === "join") {
+        return { id: n.id, kind: "join", label: n.data.label, position: n.position };
+      }
+      if (n.type === "judge") {
+        return {
+          id: n.id,
+          kind: "judge",
+          label: n.data.label,
+          rubric: n.data.rubric,
+          referenceField: n.data.referenceField,
+          model: n.data.model,
+          position: n.position,
+        };
+      }
+      if (n.type === "supervisor_scope") {
+        return {
+          id: n.id,
+          kind: "supervisor_scope",
+          label: n.data.label,
+          instructions: n.data.instructions,
+          model: n.data.model,
+          bounds: n.data.bounds,
+          memberNodeIds: n.data.memberNodeIds,
+          position: n.position,
+          size: {
+            width: n.width ?? n.measured?.width ?? DEFAULT_SCOPE_SIZE.width,
+            height: n.height ?? n.measured?.height ?? DEFAULT_SCOPE_SIZE.height,
+          },
         };
       }
       return {
@@ -193,7 +321,13 @@ export function exportWorkflowNodes(
   validateGraph(nodes, edges);
   return {
     nodes: nodes.map((node) =>
-      node.kind === "condition" ? { ...node } : { ...node, botName: bots.find((b) => b.id === node.botId)?.name },
+      node.kind === "condition" ||
+      node.kind === "parallel" ||
+      node.kind === "join" ||
+      node.kind === "judge" ||
+      node.kind === "supervisor_scope"
+        ? { ...node }
+        : { ...node, botName: bots.find((b) => b.id === node.botId)?.name },
     ),
     edges,
   };
@@ -206,6 +340,36 @@ function toImportedNode(entry: ExportedWorkflowNodeLegacy, index: number): Workf
   const id = entry.id || crypto.randomUUID();
   if (entry.kind === "condition") {
     return { id, kind: "condition", label: entry.label, combinator: entry.combinator, clauses: entry.clauses, position };
+  }
+  if (entry.kind === "parallel") {
+    return { id, kind: "parallel", label: entry.label, branchIds: entry.branchIds, position };
+  }
+  if (entry.kind === "join") {
+    return { id, kind: "join", label: entry.label, position };
+  }
+  if (entry.kind === "judge") {
+    return {
+      id,
+      kind: "judge",
+      label: entry.label,
+      rubric: entry.rubric,
+      referenceField: entry.referenceField,
+      model: entry.model,
+      position,
+    };
+  }
+  if (entry.kind === "supervisor_scope") {
+    return {
+      id,
+      kind: "supervisor_scope",
+      label: entry.label,
+      instructions: entry.instructions,
+      model: entry.model,
+      bounds: entry.bounds,
+      memberNodeIds: entry.memberNodeIds,
+      position,
+      size: entry.size ?? DEFAULT_SCOPE_SIZE,
+    };
   }
   return { id, botId: entry.botId, label: entry.label, outputSchema: entry.outputSchema ?? { fields: [] }, position };
 }

@@ -120,6 +120,19 @@ export function eventsToLines(events: BusEvent[]): LogLine[] {
           text: `[${time}] error      req=${short(event.requestId)} latency=${event.latencyMs}ms "${event.error}"`,
         });
         break;
+
+      case "supervisor.override": {
+        const parts = Object.entries(event.override)
+          .filter(([, v]) => v !== undefined)
+          .map(([k, v]) => `${k}=${typeof v === "string" ? `"${v.slice(0, 40)}${v.length > 40 ? "…" : ""}"` : v}`)
+          .join(" ");
+        lines.push({
+          key: `supervisor-${event.nodeId}-${event.timestamp}`,
+          tone: "warn",
+          text: `[${time}] supervisor bot=${event.botName} ${parts} - "${event.reasoning}"`,
+        });
+        break;
+      }
     }
   }
 

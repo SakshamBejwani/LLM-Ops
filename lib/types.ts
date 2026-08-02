@@ -4,6 +4,8 @@ export type Bot = {
   system_prompt: string;
   model: string;
   temperature: number;
+  /** Null = use the provider's own default. */
+  top_p: number | null;
   tool_ids: string[];
   created_at: string;
 };
@@ -18,9 +20,10 @@ export type RunBotCompletion = (params: {
 }) => Promise<string>;
 
 export type ToolOption = {
-  /** Built-in tool id, or `bot:<uuid>` for another bot attached as a tool. */
+  /** Built-in tool id, `bot:<uuid>` for a bot attached as a tool, or
+   * `connector:<uuid>` for a third-party connector attached as a tool. */
   id: string;
-  kind: "builtin" | "bot";
+  kind: "builtin" | "bot" | "connector";
   name: string;
   description: string;
 };
@@ -167,7 +170,23 @@ export type BusEvent =
       output?: unknown;
       error?: string;
       timestamp: number;
+    }
+  | {
+      type: "supervisor.override";
+      workflowRunId: string;
+      scopeId: string;
+      nodeId: string;
+      botName: string;
+      override: SupervisorOverride;
+      reasoning: string;
+      timestamp: number;
     };
+
+export type SupervisorOverride = {
+  temperature?: number;
+  top_p?: number;
+  systemPromptAddendum?: string;
+};
 
 // --- Workflows -------------------------------------------------------------
 
@@ -211,7 +230,76 @@ export type WorkflowConditionNodeDefinition = {
   position: { x: number; y: number };
 };
 
-export type WorkflowNodeDefinition = WorkflowBotNodeDefinition | WorkflowConditionNodeDefinition;
+/** Fans out into N branches (`branchIds`), each run concurrently against the
+ * same input. Every branch must eventually reach the same `join` node - see
+ * `validateGraph` in lib/workflow/graph.ts. No LLM call, purely structural. */
+export type WorkflowParallelNodeDefinition = {
+  id: string;
+  kind: "parallel";
+  label?: string;
+  branchIds: string[];
+  position: { x: number; y: number };
+};
+
+/** The convergence point for a `parallel` node's branches - waits for every
+ * branch to finish (barrier join) and merges their outputs keyed by the
+ * branch's terminal node id, then passes that merged object on as a single
+ * input to whatever comes next. */
+export type WorkflowJoinNodeDefinition = {
+  id: string;
+  kind: "join";
+  label?: string;
+  position: { x: number; y: number };
+};
+
+/** LLM-as-judge QA gate - grades whatever data is flowing through against a
+ * free-text rubric (optionally against a reference field's value too) and
+ * routes to a fixed "pass"/"fail" output, same shape as a condition node's
+ * if/else but graded by an LLM call instead of field comparisons. */
+export type WorkflowJudgeNodeDefinition = {
+  id: string;
+  kind: "judge";
+  label?: string;
+  rubric: string;
+  /** Optional field name (from the nearest upstream bot's outputSchema) to
+   * pass to the judge as a "known good" reference answer. */
+  referenceField?: string;
+  model: string;
+  position: { x: number; y: number };
+};
+
+export type SupervisorBounds = {
+  temperature?: [number, number];
+  top_p?: [number, number];
+};
+
+/** A "master LLM" watch zone drawn on the canvas, not part of the execution
+ * chain itself (no incoming/outgoing edges - excluded from validateGraph's
+ * chain checks in lib/workflow/graph.ts). Bot nodes become members by being
+ * positioned inside its bounds (see lib/workflow/canvas.ts); before each
+ * member bot node runs, the supervisor reviews the scope's other members'
+ * recent outputs and may override that bot's temperature/top_p/system
+ * prompt for this run only (see lib/workflow/supervisor.ts), clamped to
+ * `bounds`. */
+export type WorkflowSupervisorScopeDefinition = {
+  id: string;
+  kind: "supervisor_scope";
+  label: string;
+  instructions: string;
+  model: string;
+  bounds: SupervisorBounds;
+  position: { x: number; y: number };
+  size: { width: number; height: number };
+  memberNodeIds: string[];
+};
+
+export type WorkflowNodeDefinition =
+  | WorkflowBotNodeDefinition
+  | WorkflowConditionNodeDefinition
+  | WorkflowParallelNodeDefinition
+  | WorkflowJoinNodeDefinition
+  | WorkflowJudgeNodeDefinition
+  | WorkflowSupervisorScopeDefinition;
 
 export type WorkflowEdgeCondition = {
   /** Must match a WorkflowSchemaField.name on the source node's outputSchema. */
@@ -227,9 +315,10 @@ export type WorkflowEdgeDefinition = {
   /** Only valid when the source is a bot node. Absent = the default/"else"
    * edge - at most one per source node. */
   condition?: WorkflowEdgeCondition;
-  /** Only valid when the source is a condition node - which of its two fixed
-   * outputs this edge represents. */
-  branch?: "if" | "else";
+  /** Only valid when the source is a condition node ("if"/"else") or a
+   * parallel node (one of its `branchIds`) - which fixed output this edge
+   * represents. */
+  branch?: string;
 };
 
 export type Workflow = {
@@ -262,6 +351,11 @@ export type WorkflowNodeRunRecord = {
   bot_id: string | null;
   bot_name?: string | null;
   step_index: number;
+  /** Which parallel branch this run belongs to, e.g. "branch-1" - null for
+   * nodes outside any parallel/join pair. Purely a UI grouping hint. */
+  branch_label: string | null;
+  /** Set when a supervisor scope adjusted this node's params before it ran. */
+  supervisor_override: SupervisorOverride | null;
   request_id: string | null;
   input: unknown;
   output: unknown;
