@@ -38,6 +38,10 @@ yarn-error.log*
 /supabase/.branches
 /supabase/.temp
 
+# nested git worktrees (session-local, each is its own repo checkout - never
+# something the parent repo's history should reference)
+/.claude/worktrees/
+
 # vercel
 .vercel
 
